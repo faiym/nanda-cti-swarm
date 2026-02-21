@@ -9,6 +9,10 @@ class Msg(BaseModel):
     job_id: str | None = None
     threats: list[dict] | None = None
 
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "nanda-cti-swarm"}
+
 @app.post("/collector")
 def collector(msg: Msg):
     job_id = msg.job_id or f"demo-{uuid.uuid4().hex[:6]}"
