@@ -1,60 +1,56 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from fastapi.responses import PlainTextResponse
-import uuid
+from datetime import datetime, timezone
 
-app = FastAPI()
-
-class Msg(BaseModel):
-    job_id: str | None = None
-    threats: list[dict] | None = None
-
-@app.get("/")
-def root():
-    return {"status": "ok", "service": "nanda-cti-swarm"}
-
-@app.post("/collector")
-def collector(msg: Msg):
-    job_id = msg.job_id or f"demo-{uuid.uuid4().hex[:6]}"
-    return {
-        "job_id": job_id,
-        "threats":[
-            {"id":"CVE-TEST-001","summary":"RCE in web service"},
-            {"id":"CVE-TEST-002","summary":"Auth bypass"}
-        ]
-    }
-
-@app.post("/enricher")
-def enricher(msg: Msg):
-    out=[]
-    for t in msg.threats or []:
-        sev="HIGH" if "RCE" in t["summary"] else "MEDIUM"
-        out.append({**t,"severity":sev})
-    return {"job_id":msg.job_id,"threats":out}
-
-@app.post("/reporter")
-def reporter(msg: Msg):
-    lines=["CTI REPORT"]
-    for t in msg.threats or []:
-        lines.append(f"{t['id']} {t['severity']} {t['summary']}")
-    return {"job_id":msg.job_id,"report":"\n".join(lines)}
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
 
 @app.post("/orchestrator")
 def orchestrator(request: Request):
-    # internal calls (same app)
-    job = collector(Msg())
-    enriched = enricher(Msg(**job))
-    report = reporter(Msg(**enriched))
-    return report
+    trace = []
+    t0 = now_iso()
 
-@app.get("/skill.md", response_class=PlainTextResponse)
-def skill():
-    return """
-# Autonomous Cyber Threat Intelligence Swarm
+    # 1) Collector
+    trace.append({"ts": now_iso(), "agent": "collector", "action": "start"})
+    collector_out = collector(Msg())
+    trace.append({
+        "ts": now_iso(),
+        "agent": "collector",
+        "action": "done",
+        "summary": f"collected {len(collector_out.get('threats', []))} threats"
+    })
 
-Agents:
-collector -> generates threats
-enricher -> adds severity
-reporter -> outputs SOC report
-orchestrator -> runs workflow
-"""
+    # 2) Enricher
+    trace.append({"ts": now_iso(), "agent": "enricher", "action": "start"})
+    enricher_out = enricher(Msg(**collector_out))
+    trace.append({
+        "ts": now_iso(),
+        "agent": "enricher",
+        "action": "done",
+        "summary": "added severity/context"
+    })
+
+    # 3) Reporter
+    trace.append({"ts": now_iso(), "agent": "reporter", "action": "start"})
+    reporter_out = reporter(Msg(**enricher_out))
+    trace.append({
+        "ts": now_iso(),
+        "agent": "reporter",
+        "action": "done",
+        "summary": "generated SOC-style report"
+    })
+
+    return {
+        "meta": {
+            "service": "nanda-cti-swarm",
+            "run_started_utc": t0,
+            "run_finished_utc": now_iso(),
+            "workflow": ["collector", "enricher", "reporter"],
+        },
+        "job_id": reporter_out.get("job_id"),
+        "final_report": reporter_out.get("report"),
+        "agent_outputs": {
+            "collector": collector_out,
+            "enricher": enricher_out,
+            "reporter": reporter_out,
+        },
+        "trace": trace,
+    }
